@@ -111,4 +111,132 @@ ok CLASS, "Loaded $CLASS";
     }, 'Got expected result for invalid child_init parameter.';
 }
 
+{
+    note "Invalid timeout";
+
+    my $err = 'timeout must be a positive integer!';
+
+    local $@;
+    eval { HealthCheck::Parallel->new( timeout => 0 ) };
+    like $@, qr/^\Q$err\E/,
+        'Threw expected exception for invalid timeout (0) constructor.';
+
+    local $@;
+    eval { HealthCheck::Parallel->new( timeout => -1 ) };
+    like $@, qr/^\Q$err\E/,
+        'Threw expected exception for invalid timeout (negative) constructor.';
+
+    local $@;
+    eval { HealthCheck::Parallel->new( timeout => 'notanumber' ) };
+    like $@, qr/^\Q$err\E/,
+        'Threw expected exception for invalid timeout (string) constructor.';
+
+    my $hc = HealthCheck::Parallel->new(
+        checks => [ sub { return { id => 'wontrun', status => 'OK' } } ],
+    );
+    my $r = $hc->check( timeout => 0 );
+    like $r, {
+        status => 'CRITICAL',
+        info   => qr/^\Q$err\E/,
+    }, 'Got expected result for invalid timeout parameter.';
+}
+
+{
+    note "Global timeout with long-running checks";
+
+    my $hc = HealthCheck::Parallel->new(
+        timeout => 2,
+        checks  => [
+            sub { sleep 10; return { id => 'slow1', status => 'OK' } },
+            sub { sleep 10; return { id => 'slow2', status => 'OK' } },
+            sub { sleep 10; return { id => 'slow3', status => 'OK' } },
+        ],
+    );
+
+    my $r = $hc->check;
+
+    is $r, {
+        status => 'CRITICAL',
+        info   => "Global timeout of 2 seconds exceeded.\n",
+    }, 'Got expected timeout error with long-running checks.';
+}
+
+{
+    note "Global timeout with mixed fast and slow checks";
+
+    my $hc = HealthCheck::Parallel->new(
+        timeout => 5,
+        checks  => [
+            sub { return { id => 'fast1', status => 'OK' } },
+            sub { sleep 10; return { id => 'slow1', status => 'OK' } },
+            sub { return { id => 'fast2', status => 'OK' } },
+        ],
+    );
+
+    my $r = $hc->check;
+
+    is $r, {
+        status => 'CRITICAL',
+        info   => "Global timeout of 5 seconds exceeded.\n",
+    }, 'Got expected timeout error with mixed fast and slow checks.';
+}
+
+{
+    note "Checks complete before timeout";
+
+    my $hc = HealthCheck::Parallel->new(
+        timeout => 10,
+        checks  => [
+            sub { sleep 1; return { id => 'quick1', status => 'OK' } },
+            sub { sleep 1; return { id => 'quick2', status => 'OK' } },
+        ],
+    );
+
+    my $r = $hc->check;
+
+    is $r, {
+        status  => 'OK',
+        results => [
+            { id => 'quick1', status => 'OK' },
+            { id => 'quick2', status => 'OK' },
+        ],
+    }, 'Got expected results when checks complete before timeout.';
+}
+
+{
+    note "Single check completes successfully";
+
+    my $hc = HealthCheck::Parallel->new(
+        checks => [
+            sub { return { id => 'single', status => 'OK', extra => 'data' } },
+        ],
+    );
+
+    my $r = $hc->check;
+
+    # Single check should return unwrapped result, not { results => [...] }.
+    is $r, {
+        id     => 'single',
+        status => 'OK',
+        extra  => 'data',
+    }, 'Single check returns unwrapped result.';
+}
+
+{
+    note "Timeout parameter override";
+
+    my $hc = HealthCheck::Parallel->new(
+        checks  => [
+            sub { sleep 10; return { id => 'slow', status => 'OK' } },
+        ],
+    );
+
+    my $r = $hc->check( timeout => 2 );
+
+    is $r, {
+        status => 'CRITICAL',
+        info   => "Global timeout of 2 seconds exceeded.\n",
+    }, 'Got expected timeout error with parameter override.';
+}
+
 done_testing;
