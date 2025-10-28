@@ -47,6 +47,7 @@ sub _run_checks {
     my @results;
     my $forker;
     my $timed_out = 0;
+    my $old_alrm_handler;
 
     if ( $max_procs > 1 ) {
         $forker = Parallel::ForkManager->new(
@@ -69,19 +70,19 @@ sub _run_checks {
                 $results[ $ident ] = $ret->[0];
             }
         });
-    }
 
-    # Make sure we kill child processes if a timeout occurs.
-    local $SIG{ALRM} = sub {
-        $timed_out = 1;
-        if ( $forker ) {
+        # Set up SIGALRM handler for timeout only when using parallelization.
+        # Save existing handler to restore later.
+        $old_alrm_handler = $SIG{ALRM};
+        $SIG{ALRM} = sub {
+            $timed_out = 1;
             my @running_pids = $forker->running_procs;
             kill 'TERM', @running_pids if @running_pids;
-        }
-    };
+        };
 
-    # Start the timeout alarm.
-    alarm $timeout;
+        # Start the timeout alarm.
+        alarm $timeout;
+    }
 
     my $i = 0;
     for my $check ( @$checks ) {
@@ -102,12 +103,17 @@ sub _run_checks {
         push @results, @r;
     }
 
-    $forker->wait_all_children if $forker && !$timed_out;
+    if ( $forker ) {
+        $forker->wait_all_children unless $timed_out;
 
-    # Turn off timeout alarm if it didn't trigger.
-    alarm 0;
+        # Turn off timeout alarm if it didn't trigger.
+        alarm 0;
 
-    die "Global timeout of ${timeout} seconds exceeded.\n" if $timed_out;
+        # Restore original SIGALRM handler.
+        $SIG{ALRM} = $old_alrm_handler;
+
+        die "Global timeout of ${timeout} seconds exceeded.\n" if $timed_out;
+    }
 
     return @results;
 }
@@ -156,6 +162,9 @@ __END__
 
     # These checks will not use parallelization.
     $res = $hc->check( max_procs => 0 );
+
+    # Neither will these.
+    $res = $hc->check( max_procs => 1 );
 
     # Override timeout for specific check.
     $res = $hc->check( timeout => 60 );
@@ -208,9 +217,13 @@ If the timeout is exceeded, all running child processes will be terminated
 and a CRITICAL status will be returned with a global timeout error.
 Defaults to 120 seconds.
 
-Note that individual checks running in child processes may have their own
-timeout handling using C<SIG{ALRM}>, which will not conflict with this global
-timeout since they run in separate processes.
+B<Note:> The timeout only applies when parallelization is enabled
+(C<max_procs E<gt> 1>). When C<max_procs> is 0 or 1, checks run in the parent
+process and the timeout is not used to avoid C<$SIG{ALRM}> conflicts.
+
+When parallelization is enabled, individual checks running in child processes
+may safely use their own timeout handling with C<$SIG{ALRM}>, as they run in
+separate processes and will not conflict with this global timeout.
 
 =head1 DEPENDENCIES
 
