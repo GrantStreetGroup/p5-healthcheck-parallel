@@ -142,7 +142,29 @@ ok CLASS, "Loaded $CLASS";
 }
 
 {
-    note "Global timeout with long-running checks";
+    note "Global timeout during dispatch phase (on_wait callback)";
+
+    my $hc = HealthCheck::Parallel->new(
+        max_procs => 2,      # Force waiting during dispatch
+        timeout   => 3,
+        checks    => [
+            sub { sleep 10; return { id => 'slow1', status => 'OK' } },
+            sub { sleep 10; return { id => 'slow2', status => 'OK' } },
+            sub { sleep 10; return { id => 'slow3', status => 'OK' } },
+            sub { sleep 10; return { id => 'slow4', status => 'OK' } },
+        ],
+    );
+
+    my $r = $hc->check;
+
+    is $r, {
+        status => 'CRITICAL',
+        info   => "Global timeout of 3 seconds exceeded.\n",
+    }, 'Got expected timeout error during dispatch phase.';
+}
+
+{
+    note "Global timeout during polling phase (after all dispatched)";
 
     my $hc = HealthCheck::Parallel->new(
         timeout => 2,
@@ -158,7 +180,7 @@ ok CLASS, "Loaded $CLASS";
     is $r, {
         status => 'CRITICAL',
         info   => "Global timeout of 2 seconds exceeded.\n",
-    }, 'Got expected timeout error with long-running checks.';
+    }, 'Got expected timeout error during polling phase.';
 }
 
 {

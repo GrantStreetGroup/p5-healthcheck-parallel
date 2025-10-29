@@ -46,8 +46,14 @@ sub _run_checks {
 
     my @results;
     my $forker;
+    my $start_time;
     my $timed_out = 0;
-    my $old_alrm_handler;
+
+    # Helper to kill all running child processes.
+    my $kill_all_children = sub {
+        my @running = $forker->running_procs;
+        kill 'TERM', @running;
+    };
 
     if ( $max_procs > 1 ) {
         $forker = Parallel::ForkManager->new(
@@ -71,22 +77,24 @@ sub _run_checks {
             }
         });
 
-        # Set up SIGALRM handler for timeout only when using parallelization.
-        # Save existing handler to restore later.
-        $old_alrm_handler = $SIG{ALRM};
-        $SIG{ALRM} = sub {
-            $timed_out = 1;
-            my @running_pids = $forker->running_procs;
-            kill 'TERM', @running_pids if @running_pids;
-        };
+        # Set up on_wait callback to check timeout during dispatch.
+        # This is called periodically when start() is in its wait loop.
+        $start_time = time;
+        $forker->run_on_wait(sub {
+            my $elapsed = time - $start_time;
 
-        # Start the timeout alarm.
-        alarm $timeout;
+            # Check if we've exceeded timeout.
+            if ( $elapsed > $timeout ) {
+                $timed_out = 1;
+                # Kill all children and make start() exit its wait loop.
+                $kill_all_children->();
+            }
+        }, 1);  # Check every 1 second
     }
 
     my $i = 0;
     for my $check ( @$checks ) {
-        # Stop processing new checks if timeout occurred.
+        # Stop dispatching if timeout occurred.
         last if $timed_out;
 
         if ( $forker ) {
@@ -104,14 +112,31 @@ sub _run_checks {
     }
 
     if ( $forker ) {
-        $forker->wait_all_children unless $timed_out;
+        # If we already timed out during dispatch, skip polling since
+        # children were already killed.
+        if ( !$timed_out ) {
+            # Poll for child completion with timeout checking.
+            while ( $forker->running_procs ) {
+                # Collect any finished children (non-blocking).
+                $forker->reap_finished_children;
 
-        # Turn off timeout alarm if it didn't trigger.
-        alarm 0;
+                # Check if we've exceeded timeout during polling.
+                if ( time - $start_time > $timeout ) {
+                    $timed_out = 1;
+                    # Kill all still-running children.
+                    $kill_all_children->();
+                    last;
+                }
 
-        # Restore original SIGALRM handler.
-        $SIG{ALRM} = $old_alrm_handler;
+                # Sleep before next check.
+                sleep 1;
+            }
+        }
 
+        # Final reap to collect any remaining children.
+        $forker->reap_finished_children;
+
+        # Die with timeout error if timeout occurred.
         die "Global timeout of ${timeout} seconds exceeded.\n" if $timed_out;
     }
 
@@ -219,11 +244,10 @@ Defaults to 120 seconds.
 
 B<Note:> The timeout only applies when parallelization is enabled
 (C<max_procs E<gt> 1>). When C<max_procs> is 0 or 1, checks run in the parent
-process and the timeout is not used to avoid C<$SIG{ALRM}> conflicts.
+process and the timeout is not used.
 
-When parallelization is enabled, individual checks running in child processes
-may safely use their own timeout handling with C<$SIG{ALRM}>, as they run in
-separate processes and will not conflict with this global timeout.
+The timeout is implemented using a non-blocking polling loop instead of using
+any signal-based timeouts to potentially avoiding conflicting with others.
 
 =head1 DEPENDENCIES
 
