@@ -128,7 +128,7 @@ sub _run_checks {
                 }
 
                 # Sleep before next check.
-                sleep 1;
+                sleep $forker->waitpid_blocking_sleep;
             }
         }
 
