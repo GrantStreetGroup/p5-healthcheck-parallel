@@ -104,8 +104,7 @@ sub _run_checks {
 
         my @r = $self->_run_check( $check, $params );
 
-        $forker->finish( 0, \@r ) and next
-            if $forker;
+        $forker->finish( 0, \@r ) if $forker;
 
         # Non-forked process.
         push @results, @r;
