@@ -125,7 +125,7 @@ sub _validate_max_procs {
     my ( $self, $max_procs ) = @_;
 
     croak "max_procs must be a zero or positive integer!"
-        unless $max_procs =~ /^\d+$/ && $max_procs >= 0;
+        unless $max_procs =~ /^\d+$/;
 }
 
 sub _validate_child_init {
