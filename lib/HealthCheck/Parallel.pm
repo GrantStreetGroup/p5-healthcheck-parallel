@@ -99,6 +99,11 @@ sub _run_checks {
 
         if ( $forker ) {
             $forker->start( $i++ ) and next;
+
+            # If timeout occurred while waiting to start, exit child immediately
+            # without running the check (start() forked before we could prevent it).
+            $forker->finish if $timed_out;
+
             $child_init->() if $child_init;
         }
 
@@ -110,34 +115,8 @@ sub _run_checks {
         push @results, @r;
     }
 
-    if ( $forker ) {
-        # If we already timed out during dispatch, skip polling since
-        # children were already killed.
-        if ( !$timed_out ) {
-            # Poll for child completion with timeout checking.
-            while ( $forker->running_procs ) {
-                # Collect any finished children (non-blocking).
-                $forker->reap_finished_children;
-
-                # Check if we've exceeded timeout during polling.
-                if ( time - $start_time > $timeout ) {
-                    $timed_out = 1;
-                    # Kill all still-running children.
-                    $kill_all_children->();
-                    last;
-                }
-
-                # Sleep before next check.
-                sleep $forker->waitpid_blocking_sleep;
-            }
-        }
-
-        # Final reap to collect any remaining children.
-        $forker->reap_finished_children;
-
-        # Die with timeout error if timeout occurred.
-        die "Global timeout of ${timeout} seconds exceeded.\n" if $timed_out;
-    }
+    $forker->wait_all_children if $forker;
+    die "Global timeout of ${timeout} seconds exceeded.\n" if $timed_out;
 
     return @results;
 }
