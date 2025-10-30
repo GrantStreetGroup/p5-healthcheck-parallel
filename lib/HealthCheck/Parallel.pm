@@ -8,6 +8,7 @@ use parent 'HealthCheck';
 
 use Carp;
 use Parallel::ForkManager;
+use Scalar::Util qw( weaken );
 
 # ABSTRACT: A HealthCheck that uses parallelization for running checks
 # VERSION
@@ -74,6 +75,12 @@ sub _run_checks {
         # Set up on_wait callback to check timeout during dispatch.
         # This is called periodically when start() is in its wait loop.
         $start_time = time;
+
+        # Use weak reference to avoid circular reference between
+        # $forker and the callback closure.
+        my $weak_forker = $forker;
+        weaken $weak_forker;
+
         $forker->run_on_wait(sub {
             my $elapsed = time - $start_time;
 
@@ -82,7 +89,7 @@ sub _run_checks {
                 $timed_out = 1;
 
                 # Kill all children and make start() exit its wait loop.
-                my @running = $forker->running_procs;
+                my @running = $weak_forker->running_procs;
                 kill 'TERM', @running;
             }
         }, 1);  # Check every 1 second
