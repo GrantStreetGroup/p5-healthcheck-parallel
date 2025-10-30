@@ -49,12 +49,6 @@ sub _run_checks {
     my $start_time;
     my $timed_out = 0;
 
-    # Helper to kill all running child processes.
-    my $kill_all_children = sub {
-        my @running = $forker->running_procs;
-        kill 'TERM', @running;
-    };
-
     if ( $max_procs > 1 ) {
         $forker = Parallel::ForkManager->new(
             $max_procs,
@@ -86,8 +80,10 @@ sub _run_checks {
             # Check if we've exceeded timeout.
             if ( $elapsed > $timeout ) {
                 $timed_out = 1;
+
                 # Kill all children and make start() exit its wait loop.
-                $kill_all_children->();
+                my @running = $forker->running_procs;
+                kill 'TERM', @running;
             }
         }, 1);  # Check every 1 second
     }
