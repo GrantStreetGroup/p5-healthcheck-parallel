@@ -49,6 +49,9 @@ sub _run_checks {
     my $forker;
     my $start_time;
     my $timed_out = 0;
+    my %killed_idents;
+    my %pid_to_ident;
+    my $last_dispatched_ident = -1;
 
     if ( $max_procs > 1 ) {
         $forker = Parallel::ForkManager->new(
@@ -58,6 +61,8 @@ sub _run_checks {
 
         $forker->run_on_finish(sub {
             my ( $pid, $exit_code, $ident, $exit_sig, $core_dump, $ret ) = @_;
+
+            delete $pid_to_ident{$pid};
 
             # Child process had some error.
             if ( $exit_code != 0 ) {
@@ -89,8 +94,13 @@ sub _run_checks {
                 $timed_out = 1;
 
                 # Kill all children and make start() exit its wait loop.
-                my @running = $weak_forker->running_procs;
-                kill 'TERM', @running;
+                # Capture the idents of processes being killed so we can
+                # report timeout results for them.
+                my @running_pids = $weak_forker->running_procs;
+                for my $pid ( @running_pids ) {
+                    $killed_idents{ $pid_to_ident{ $pid } } = 1;
+                }
+                kill 'TERM', @running_pids;
             }
         }, 1);  # Check every 1 second
     }
@@ -100,14 +110,23 @@ sub _run_checks {
         # Stop dispatching if timeout occurred.
         last if $timed_out;
 
-        if ( $forker ) {
-            $forker->start( $i++ ) and next;
+        my $ident = $i++;
+        $last_dispatched_ident = $ident;
 
-            # If timeout occurred while waiting to start, exit child immediately
-            # without running the check (start() forked before we could prevent it).
-            $forker->finish if $timed_out;
+        if ( $forker ) {
+            my $pid = $forker->start( $ident );
+
+            if ( $pid ) {
+                # In parent - track this PID
+                $pid_to_ident{$pid} = $ident;
+                next;
+            }
 
             $child_init->() if $child_init;
+
+            # In child - if timeout occurred while waiting to start, exit immediately
+            # without running the check (start() forked before we could prevent it).
+            $forker->finish if $timed_out;
         }
 
         my @r = $self->_run_check( $check, $params );
@@ -119,7 +138,27 @@ sub _run_checks {
     }
 
     $forker->wait_all_children if $forker;
-    die "Global timeout of ${timeout} seconds exceeded.\n" if $timed_out;
+
+    # If timeout occurred, fill in timeout results for killed processes
+    # and checks that never started.
+    if ( $timed_out ) {
+        # Add timeout results for killed processes.
+        for my $ident ( keys %killed_idents ) {
+            $results[ $ident ] = {
+                status => 'CRITICAL',
+                info   => "Check killed due to global timeout of $timeout seconds.",
+            };
+        }
+
+        # Add timeout results for checks that were never dispatched.
+        # Only fill in idents greater than the last one we actually dispatched.
+        for my $ident ( $last_dispatched_ident + 1 .. @$checks - 1 ) {
+            $results[ $ident ] = {
+                status => 'CRITICAL',
+                info   => "Check not started due to global timeout of $timeout seconds.",
+            };
+        }
+    }
 
     return @results;
 }

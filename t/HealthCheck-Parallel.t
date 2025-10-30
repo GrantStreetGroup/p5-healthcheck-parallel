@@ -158,9 +158,15 @@ ok CLASS, "Loaded $CLASS";
     my $r = $hc->check;
 
     is $r, {
-        status => 'CRITICAL',
-        info   => "Global timeout of 3 seconds exceeded.\n",
-    }, 'Got expected timeout error during dispatch phase.';
+        status  => 'CRITICAL',
+        results => [
+            { status => 'CRITICAL', info => 'Check killed due to global timeout of 3 seconds.' },
+            { status => 'CRITICAL', info => 'Check killed due to global timeout of 3 seconds.' },
+            # One more check gets forked after timeout during check dispatching.
+            { status => 'CRITICAL', info => 'Check killed due to global timeout of 3 seconds.' },
+            { status => 'CRITICAL', info => 'Check not started due to global timeout of 3 seconds.' },
+        ],
+    }, 'Got expected timeout result during dispatch phase.';
 }
 
 {
@@ -178,9 +184,13 @@ ok CLASS, "Loaded $CLASS";
     my $r = $hc->check;
 
     is $r, {
-        status => 'CRITICAL',
-        info   => "Global timeout of 2 seconds exceeded.\n",
-    }, 'Got expected timeout error during polling phase.';
+        status  => 'CRITICAL',
+        results => [
+            { status => 'CRITICAL', info => 'Check killed due to global timeout of 2 seconds.' },
+            { status => 'CRITICAL', info => 'Check killed due to global timeout of 2 seconds.' },
+            { status => 'CRITICAL', info => 'Check killed due to global timeout of 2 seconds.' },
+        ],
+    }, 'Got expected timeout result during polling phase.';
 }
 
 {
@@ -198,9 +208,13 @@ ok CLASS, "Loaded $CLASS";
     my $r = $hc->check;
 
     is $r, {
-        status => 'CRITICAL',
-        info   => "Global timeout of 5 seconds exceeded.\n",
-    }, 'Got expected timeout error with mixed fast and slow checks.';
+        status  => 'CRITICAL',
+        results => [
+            { id => 'fast1', status => 'OK' },
+            { status => 'CRITICAL', info => 'Check killed due to global timeout of 5 seconds.' },
+            { id => 'fast2', status => 'OK' },
+        ],
+    }, 'Got expected timeout result with mixed fast and slow checks.';
 }
 
 {
@@ -257,8 +271,8 @@ ok CLASS, "Loaded $CLASS";
 
     is $r, {
         status => 'CRITICAL',
-        info   => "Global timeout of 2 seconds exceeded.\n",
-    }, 'Got expected timeout error with parameter override.';
+        info   => 'Check killed due to global timeout of 2 seconds.',
+    }, 'Got expected timeout result with parameter override.';
 }
 
 done_testing;
