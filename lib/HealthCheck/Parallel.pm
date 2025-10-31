@@ -31,19 +31,13 @@ sub new {
 sub _run_checks {
     my ( $self, $checks, $params ) = @_;
 
-    $self->_validate_max_procs( $params->{max_procs} )
-        if exists $params->{max_procs};
-
-    $self->_validate_child_init( $params->{child_init} )
-        if exists $params->{child_init};
-
-    $self->_validate_timeout( $params->{timeout} )
-        if exists $params->{timeout};
-
-    my $max_procs  = $params->{max_procs}  // $self->{max_procs};
     my $child_init = $params->{child_init} // $self->{child_init};
     my $tempdir    = $params->{tempdir}    // $self->{tempdir};
-    my $timeout    = $params->{timeout}    // $self->{timeout};
+
+    $self->_validate_child_init( $child_init ) if defined $child_init;
+
+    my $max_procs = $self->_validate_max_procs( $params->{max_procs} );
+    my $timeout   = $self->_validate_timeout( $params->{timeout} );
 
     my @results;
     my $forker;
@@ -62,7 +56,7 @@ sub _run_checks {
         $forker->run_on_finish(sub {
             my ( $pid, $exit_code, $ident, $exit_sig, $core_dump, $ret ) = @_;
 
-            delete $pid_to_ident{$pid};
+            delete $pid_to_ident{ $pid };
 
             # Child process had some error.
             if ( $exit_code != 0 ) {
@@ -110,22 +104,24 @@ sub _run_checks {
         # Stop dispatching if timeout occurred.
         last if $timed_out;
 
-        my $ident = $i++;
-        $last_dispatched_ident = $ident;
+        my $ident = $last_dispatched_ident = $i++;
 
         if ( $forker ) {
             my $pid = $forker->start( $ident );
 
             if ( $pid ) {
-                # In parent - track this PID
-                $pid_to_ident{$pid} = $ident;
+                # In parent - track this PID.
+                $pid_to_ident{ $pid } = $ident;
                 next;
             }
 
+            # Need to at least call the init callback before exiting so that we
+            # make sure to deal with things like FCGI cleanup.
             $child_init->() if $child_init;
 
-            # In child - if timeout occurred while waiting to start, exit immediately
-            # without running the check (start() forked before we could prevent it).
+            # In child - if timeout occurred while waiting to start, exit
+            # immediately without running the check (start() forked before we
+            # could prevent it).
             $forker->finish if $timed_out;
         }
 
@@ -146,7 +142,10 @@ sub _run_checks {
         for my $ident ( keys %killed_idents ) {
             $results[ $ident ] = {
                 status => 'CRITICAL',
-                info   => "Check killed due to global timeout of $timeout seconds.",
+                info   => sprintf(
+                    'Check killed due to global timeout of %d seconds.',
+                    $timeout,
+                ),
             };
         }
 
@@ -155,7 +154,10 @@ sub _run_checks {
         for my $ident ( $last_dispatched_ident + 1 .. @$checks - 1 ) {
             $results[ $ident ] = {
                 status => 'CRITICAL',
-                info   => "Check not started due to global timeout of $timeout seconds.",
+                info   => sprintf(
+                    'Check not started due to global timeout of %d seconds.',
+                    $timeout,
+                ),
             };
         }
     }
@@ -163,11 +165,23 @@ sub _run_checks {
     return @results;
 }
 
+sub _resolve_value {
+    my ( $self, $value ) = @_;
+
+    return ref $value eq 'CODE' ? $value->() : $value;
+}
+
 sub _validate_max_procs {
     my ( $self, $max_procs ) = @_;
 
+    $max_procs = $self->{max_procs} unless defined $max_procs;
+
+    my $value = $self->_resolve_value( $max_procs );
+
     croak "max_procs must be a zero or positive integer!"
-        unless $max_procs =~ /^\d+$/;
+        unless defined $value && $value =~ /^\d+$/;
+
+    return $value;
 }
 
 sub _validate_child_init {
@@ -180,8 +194,14 @@ sub _validate_child_init {
 sub _validate_timeout {
     my ( $self, $timeout ) = @_;
 
+    $timeout = $self->{timeout} unless defined $timeout;
+
+    my $value = $self->_resolve_value( $timeout );
+
     croak "timeout must be a positive integer!"
-        unless $timeout =~ /^\d+$/ && $timeout > 0;
+        unless defined $value && $value =~ /^\d+$/ && $value > 0;
+
+    return $value;
 }
 
 1;
@@ -231,10 +251,18 @@ and global timeout behavior.
 
 =head2 max_procs
 
-A positive integer specifying the maximum number of processes that should be run
-in parallel when executing the checks.
+A positive integer (or coderef returning one) specifying the maximum number of
+processes that should be run in parallel when executing the checks.
 No parallelization will be used unless given a value that is greater than 1.
 Defaults to 4.
+
+If provided as a coderef, it will be called at runtime to determine the value,
+allowing dynamic adjustment:
+
+    my $hc = HealthCheck::Parallel->new(
+        max_procs => sub { int(rand(10)) },
+        checks    => [ ... ],
+    );
 
 =head2 child_init
 
@@ -256,11 +284,19 @@ Sets the C<tempdir> value to use in L<Parallel::ForkManager> for IPC.
 
 =head2 timeout
 
-A positive integer specifying the maximum number of seconds to wait for all
-parallelized checks to complete.
+A positive integer (or coderef returning one) specifying the maximum number of
+seconds to wait for all parallelized checks to complete.
 If the timeout is exceeded, all running child processes will be terminated
-and a CRITICAL status will be returned with a global timeout error.
+and CRITICAL results will be returned for affected checks.
 Defaults to 120 seconds.
+
+If provided as a coderef, it will be called at runtime to determine the value,
+allowing dynamic adjustment:
+
+    my $hc = HealthCheck::Parallel->new(
+        timeout => sub { int(rand(10)) },
+        checks  => [ ... ],
+    );
 
 B<Note:> The timeout only applies when parallelization is enabled
 (C<max_procs E<gt> 1>). When C<max_procs> is 0 or 1, checks run in the parent
