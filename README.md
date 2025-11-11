@@ -4,7 +4,7 @@ HealthCheck::Parallel - A HealthCheck that uses parallelization for running chec
 
 # VERSION
 
-version v0.0.1
+version v0.1.0
 
 # SYNOPSIS
 
@@ -12,6 +12,7 @@ version v0.0.1
 
     my $hc = HealthCheck::Parallel->new(
         max_procs  => 4,      # default
+        timeout    => 120,    # default, global timeout in seconds
         tempdir    => '/tmp', # override Parallel::ForkManager default
         child_init => sub { warn "Will run at start of child process check" },
         checks     => [
@@ -26,6 +27,12 @@ version v0.0.1
     # These checks will not use parallelization.
     $res = $hc->check( max_procs => 0 );
 
+    # Neither will these.
+    $res = $hc->check( max_procs => 1 );
+
+    # Override timeout for specific check.
+    $res = $hc->check( timeout => 60 );
+
 # DESCRIPTION
 
 This library inherits [HealthCheck](https://metacpan.org/pod/HealthCheck) so that the provided checks are run in
@@ -35,18 +42,26 @@ parallel.
 
 ## new
 
-Overrides the ["new" in HealthCheck](https://metacpan.org/pod/HealthCheck#new) constructor to additionally allow a
-["max\_procs"](#max_procs) argument for the maximum number of checks/processes to run in
-parallel.
+Overrides the ["new" in HealthCheck](https://metacpan.org/pod/HealthCheck#new) constructor to additionally allow
+["max\_procs"](#max_procs) and ["timeout"](#timeout) arguments for controlling parallelization
+and global timeout behavior.
 
 # ATTRIBUTES
 
 ## max\_procs
 
-A positive integer specifying the maximum number of processes that should be run
-in parallel when executing the checks.
+A positive integer (or coderef returning one) specifying the maximum number of
+processes that should be run in parallel when executing the checks.
 No parallelization will be used unless given a value that is greater than 1.
 Defaults to 4.
+
+If provided as a coderef, it will be called at runtime to determine the value,
+allowing dynamic adjustment:
+
+    my $hc = HealthCheck::Parallel->new(
+        max_procs => sub { int(rand(10)) },
+        checks    => [ ... ],
+    );
 
 ## child\_init
 
@@ -66,6 +81,29 @@ use of STDOUT if these checks are running under FastCGI envrionment:
 
 Sets the `tempdir` value to use in [Parallel::ForkManager](https://metacpan.org/pod/Parallel%3A%3AForkManager) for IPC.
 
+## timeout
+
+A positive integer (or coderef returning one) specifying the maximum number of
+seconds to wait for all parallelized checks to complete.
+If the timeout is exceeded, all running child processes will be terminated
+and CRITICAL results will be returned for affected checks.
+Defaults to 120 seconds.
+
+If provided as a coderef, it will be called at runtime to determine the value,
+allowing dynamic adjustment:
+
+    my $hc = HealthCheck::Parallel->new(
+        timeout => sub { int(rand(10)) },
+        checks  => [ ... ],
+    );
+
+**Note:** The timeout only applies when parallelization is enabled
+(`max_procs > 1`). When `max_procs` is 0 or 1, checks run in the parent
+process and the timeout is not used.
+
+The timeout is implemented using a non-blocking polling loop instead of using
+any signal-based timeouts to potentially avoiding conflicting with others.
+
 # DEPENDENCIES
 
 - Perl 5.10 or higher.
@@ -84,7 +122,7 @@ Grant Street Group <developers@grantstreet.com>
 
 # COPYRIGHT AND LICENSE
 
-This software is Copyright (c) 2023 by Grant Street Group.
+This software is Copyright (c) 2023 - 2025 by Grant Street Group.
 
 This is free software, licensed under:
 
