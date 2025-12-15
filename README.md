@@ -4,7 +4,7 @@ HealthCheck::Parallel - A HealthCheck that uses parallelization for running chec
 
 # VERSION
 
-version v0.1.0
+version v0.2.0
 
 # SYNOPSIS
 
